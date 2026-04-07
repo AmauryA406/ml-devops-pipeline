@@ -1,4 +1,4 @@
-name: CI Pipeline
+name: CI/CD Pipeline
 
 on:
   push:
@@ -6,9 +6,15 @@ on:
   pull_request:
     branches: [main]
 
+env:
+  AWS_REGION: eu-west-3
+  ECR_REPOSITORY: ml-devops-pipeline
+  AWS_ACCOUNT_ID: 291883201781
+
 jobs:
-  build-and-test:
+  build-and-deploy:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -21,5 +27,30 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Build Docker image
-        run: docker build -t ml-devops-pipeline .
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: eu-west-3
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push Docker image
+        run: |
+          docker build --platform linux/amd64 -t $ECR_REPOSITORY .
+          docker tag $ECR_REPOSITORY:latest $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:latest
+          docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:latest
+
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            aws ecr get-login-password --region eu-west-3 | sudo docker login --username AWS --password-stdin 291883201781.dkr.ecr.eu-west-3.amazonaws.com
+            sudo docker pull --platform linux/amd64 291883201781.dkr.ecr.eu-west-3.amazonaws.com/ml-devops-pipeline:latest
+            sudo docker stop $(sudo docker ps -q) || true
+            sudo docker run -d -p 8000:8000 291883201781.dkr.ecr.eu-west-3.amazonaws.com/ml-devops-pipeline:latest
